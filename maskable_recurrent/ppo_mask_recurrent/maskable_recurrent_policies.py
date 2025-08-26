@@ -9,12 +9,16 @@ from stable_baselines3.common.torch_layers import (
 from stable_baselines3.common.utils import zip_strict
 from torch import nn
 from sb3_contrib.common.recurrent.type_aliases import RNNStates
-from sb3_contrib.common.maskable.distributions import MaskableDistribution, make_masked_proba_distribution
+from sb3_contrib.common.maskable.distributions import (
+    MaskableDistribution,
+    make_masked_proba_distribution,
+)
 from typing import Any, Dict, Optional, Tuple, Type, TypeVar, Union
 import gym
 import numpy as np
 import torch as th
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
+
 
 class MaskableRecurrentActorCriticPolicy(ActorCriticPolicy):
     """
@@ -85,26 +89,63 @@ class MaskableRecurrentActorCriticPolicy(ActorCriticPolicy):
         enable_critic_lstm: bool = True,
         lstm_kwargs: Optional[Dict[str, Any]] = None,
     ):
+        if features_extractor_kwargs is None:
+            features_extractor_kwargs = {}
+        if optimizer_kwargs is None:
+            optimizer_kwargs = {}
+
         self.lstm_output_dim = lstm_hidden_size
-        super().__init__(
-            observation_space,
-            action_space,
-            lr_schedule,
-            net_arch,
-            activation_fn,
-            ortho_init,
-            use_sde,
-            log_std_init,
-            full_std,
-            sde_net_arch,
-            use_expln,
-            squash_output,
-            features_extractor_class,
-            features_extractor_kwargs,
-            normalize_images,
-            optimizer_class,
-            optimizer_kwargs,
-        )
+
+        # Use keyword args to avoid positional mismatches across SB3 versions
+        try:
+            super().__init__(
+                observation_space=observation_space,
+                action_space=action_space,
+                lr_schedule=lr_schedule,
+                net_arch=net_arch,
+                activation_fn=activation_fn,
+                ortho_init=ortho_init,
+                use_sde=use_sde,
+                log_std_init=log_std_init,
+                full_std=full_std,
+                use_expln=use_expln,
+                squash_output=squash_output,
+                features_extractor_class=features_extractor_class,
+                features_extractor_kwargs=features_extractor_kwargs,
+                features_extractor=None,  # explicit for SB3 versions that support it
+                normalize_images=normalize_images,
+                optimizer_class=optimizer_class,
+                optimizer_kwargs=optimizer_kwargs,
+            )
+        except TypeError:
+            # Fallback for SB3 builds without `features_extractor` in the signature
+            super().__init__(
+                observation_space=observation_space,
+                action_space=action_space,
+                lr_schedule=lr_schedule,
+                net_arch=net_arch,
+                activation_fn=activation_fn,
+                ortho_init=ortho_init,
+                use_sde=use_sde,
+                log_std_init=log_std_init,
+                full_std=full_std,
+                use_expln=use_expln,
+                squash_output=squash_output,
+                features_extractor_class=features_extractor_class,
+                features_extractor_kwargs=features_extractor_kwargs,
+                normalize_images=normalize_images,
+                optimizer_class=optimizer_class,
+                optimizer_kwargs=optimizer_kwargs,
+            )
+
+        # As an extra guard if a wrapper changes them:
+        if not isinstance(self.features_extractor_kwargs, dict):
+            self.features_extractor_kwargs = {}
+        if not isinstance(self.optimizer_kwargs, dict):
+            self.optimizer_kwargs = {}
+        self.lstm_kwargs = lstm_kwargs or {}
+        self.shared_lstm = shared_lstm
+        self.enable_critic_lstm = enable_critic_lstm
 
         self.lstm_kwargs = lstm_kwargs or {}
         self.shared_lstm = shared_lstm
@@ -120,9 +161,9 @@ class MaskableRecurrentActorCriticPolicy(ActorCriticPolicy):
         self.lstm_hidden_state_shape = (n_lstm_layers, 1, lstm_hidden_size)
         self.critic = None
         self.lstm_critic = None
-        assert not (
-            self.shared_lstm and self.enable_critic_lstm
-        ), "You must choose between shared LSTM, seperate or no LSTM for the critic"
+        assert not (self.shared_lstm and self.enable_critic_lstm), (
+            "You must choose between shared LSTM, seperate or no LSTM for the critic"
+        )
 
         # No LSTM for the critic, we still need to convert
         # output of features extractor to the correct size
@@ -140,7 +181,9 @@ class MaskableRecurrentActorCriticPolicy(ActorCriticPolicy):
             )
 
         # Setup optimizer with initial learning rate
-        self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
+        self.optimizer = self.optimizer_class(
+            self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs
+        )
         self.action_dist = make_masked_proba_distribution(action_space)
 
     def _build_mlp_extractor(self) -> None:
@@ -179,14 +222,18 @@ class MaskableRecurrentActorCriticPolicy(ActorCriticPolicy):
         # Batch to sequence
         # (padded batch size, features_dim) -> (n_seq, max length, features_dim) -> (max length, n_seq, features_dim)
         # note: max length (max sequence length) is always 1 during data collection
-        features_sequence = features.reshape((n_seq, -1, lstm.input_size)).swapaxes(0, 1)
+        features_sequence = features.reshape((n_seq, -1, lstm.input_size)).swapaxes(
+            0, 1
+        )
         episode_starts = episode_starts.reshape((n_seq, -1)).swapaxes(0, 1)
 
         # If we don't have to reset the state in the middle of a sequence
         # we can avoid the for loop, which speeds up things
         if th.all(episode_starts == 0.0):
             lstm_output, lstm_states = lstm(features_sequence, lstm_states)
-            lstm_output = th.flatten(lstm_output.transpose(0, 1), start_dim=0, end_dim=1)
+            lstm_output = th.flatten(
+                lstm_output.transpose(0, 1), start_dim=0, end_dim=1
+            )
             return lstm_output, lstm_states
 
         lstm_output = []
@@ -203,7 +250,9 @@ class MaskableRecurrentActorCriticPolicy(ActorCriticPolicy):
             lstm_output += [hidden]
         # Sequence to batch
         # (sequence length, n_seq, lstm_out_dim) -> (batch_size, lstm_out_dim)
-        lstm_output = th.flatten(th.cat(lstm_output).transpose(0, 1), start_dim=0, end_dim=1)
+        lstm_output = th.flatten(
+            th.cat(lstm_output).transpose(0, 1), start_dim=0, end_dim=1
+        )
         return lstm_output, lstm_states
 
     def forward(
@@ -228,9 +277,13 @@ class MaskableRecurrentActorCriticPolicy(ActorCriticPolicy):
         # Preprocess the observation if needed
         features = self.extract_features(obs)
         # latent_pi, latent_vf = self.mlp_extractor(features)
-        latent_pi, lstm_states_pi = self._process_sequence(features, lstm_states.pi, episode_starts, self.lstm_actor)
+        latent_pi, lstm_states_pi = self._process_sequence(
+            features, lstm_states.pi, episode_starts, self.lstm_actor
+        )
         if self.lstm_critic is not None:
-            latent_vf, lstm_states_vf = self._process_sequence(features, lstm_states.vf, episode_starts, self.lstm_critic)
+            latent_vf, lstm_states_vf = self._process_sequence(
+                features, lstm_states.vf, episode_starts, self.lstm_critic
+            )
         elif self.shared_lstm:
             # Re-use LSTM features but do not backpropagate
             latent_vf = latent_pi.detach()
@@ -269,7 +322,9 @@ class MaskableRecurrentActorCriticPolicy(ActorCriticPolicy):
         :return: the action distribution and new hidden states.
         """
         features = self.extract_features(obs)
-        latent_pi, lstm_states = self._process_sequence(features, lstm_states, episode_starts, self.lstm_actor)
+        latent_pi, lstm_states = self._process_sequence(
+            features, lstm_states, episode_starts, self.lstm_actor
+        )
         latent_pi = self.mlp_extractor.forward_actor(latent_pi)
         distribution = self._get_action_dist_from_latent(latent_pi)
         if action_masks is not None:
@@ -293,10 +348,14 @@ class MaskableRecurrentActorCriticPolicy(ActorCriticPolicy):
         """
         features = self.extract_features(obs)
         if self.lstm_critic is not None:
-            latent_vf, lstm_states_vf = self._process_sequence(features, lstm_states, episode_starts, self.lstm_critic)
+            latent_vf, lstm_states_vf = self._process_sequence(
+                features, lstm_states, episode_starts, self.lstm_critic
+            )
         elif self.shared_lstm:
             # Use LSTM from the actor
-            latent_pi, _ = self._process_sequence(features, lstm_states, episode_starts, self.lstm_actor)
+            latent_pi, _ = self._process_sequence(
+                features, lstm_states, episode_starts, self.lstm_actor
+            )
             latent_vf = latent_pi.detach()
         else:
             latent_vf = self.critic(features)
@@ -327,10 +386,14 @@ class MaskableRecurrentActorCriticPolicy(ActorCriticPolicy):
         """
         # Preprocess the observation if needed
         features = self.extract_features(obs)
-        latent_pi, _ = self._process_sequence(features, lstm_states.pi, episode_starts, self.lstm_actor)
+        latent_pi, _ = self._process_sequence(
+            features, lstm_states.pi, episode_starts, self.lstm_actor
+        )
 
         if self.lstm_critic is not None:
-            latent_vf, _ = self._process_sequence(features, lstm_states.vf, episode_starts, self.lstm_critic)
+            latent_vf, _ = self._process_sequence(
+                features, lstm_states.vf, episode_starts, self.lstm_critic
+            )
         elif self.shared_lstm:
             latent_vf = latent_pi.detach()
         else:
@@ -340,7 +403,7 @@ class MaskableRecurrentActorCriticPolicy(ActorCriticPolicy):
         latent_vf = self.mlp_extractor.forward_critic(latent_vf)
         distribution = self._get_action_dist_from_latent(latent_pi)
         if action_masks is not None:
-            #print(distribution.logits.shape)
+            # print(distribution.logits.shape)
             distribution.apply_masking(action_masks)
         log_prob = distribution.log_prob(actions)
         values = self.value_net(latent_vf)
@@ -366,7 +429,9 @@ class MaskableRecurrentActorCriticPolicy(ActorCriticPolicy):
         :return: Taken action according to the policy and hidden states of the RNN
         """
 
-        distribution, lstm_states = self.get_distribution(observation, lstm_states, episode_starts, action_masks = action_masks)
+        distribution, lstm_states = self.get_distribution(
+            observation, lstm_states, episode_starts, action_masks=action_masks
+        )
         return distribution.get_actions(deterministic=deterministic), lstm_states
 
     def predict(
@@ -401,7 +466,9 @@ class MaskableRecurrentActorCriticPolicy(ActorCriticPolicy):
         # state : (n_layers, n_envs, dim)
         if state is None:
             # Initialize hidden states to zeros
-            state = np.concatenate([np.zeros(self.lstm_hidden_state_shape) for _ in range(n_envs)], axis=1)
+            state = np.concatenate(
+                [np.zeros(self.lstm_hidden_state_shape) for _ in range(n_envs)], axis=1
+            )
             state = (state, state)
 
         if episode_start is None:
@@ -409,10 +476,17 @@ class MaskableRecurrentActorCriticPolicy(ActorCriticPolicy):
 
         with th.no_grad():
             # Convert to PyTorch tensors
-            states = th.tensor(state[0]).float().to(self.device), th.tensor(state[1]).float().to(self.device)
+            states = (
+                th.tensor(state[0]).float().to(self.device),
+                th.tensor(state[1]).float().to(self.device),
+            )
             episode_starts = th.tensor(episode_start).float().to(self.device)
             actions, states = self._predict(
-                observation, lstm_states=states, episode_starts=episode_starts, action_masks=action_masks, deterministic=deterministic
+                observation,
+                lstm_states=states,
+                episode_starts=episode_starts,
+                action_masks=action_masks,
+                deterministic=deterministic,
             )
             states = (states[0].cpu().numpy(), states[1].cpu().numpy())
 
@@ -426,7 +500,9 @@ class MaskableRecurrentActorCriticPolicy(ActorCriticPolicy):
             else:
                 # Actions could be on arbitrary scale, so clip the actions to avoid
                 # out of bound error (e.g. if sampling from a Gaussian distribution)
-                actions = np.clip(actions, self.action_space.low, self.action_space.high)
+                actions = np.clip(
+                    actions, self.action_space.low, self.action_space.high
+                )
 
         # Remove batch dimension if needed
         if not vectorized_env:
@@ -434,7 +510,9 @@ class MaskableRecurrentActorCriticPolicy(ActorCriticPolicy):
 
         return actions, states
 
-    def _get_action_dist_from_latent(self, latent_pi: th.Tensor) -> MaskableDistribution:
+    def _get_action_dist_from_latent(
+        self, latent_pi: th.Tensor
+    ) -> MaskableDistribution:
         """
         Retrieve action distribution given the latent codes.
 
@@ -443,4 +521,3 @@ class MaskableRecurrentActorCriticPolicy(ActorCriticPolicy):
         """
         action_logits = self.action_net(latent_pi)
         return self.action_dist.proba_distribution(action_logits=action_logits)
-

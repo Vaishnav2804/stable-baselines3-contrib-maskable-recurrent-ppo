@@ -1,30 +1,52 @@
 from copy import deepcopy
 from sb3_contrib.common.recurrent.policies import RecurrentActorCriticPolicy
 from sb3_contrib.common.recurrent.type_aliases import RNNStates
-from sb3_contrib.ppo_recurrent.policies import CnnLstmPolicy, MlpLstmPolicy, MultiInputLstmPolicy
-from maskable_recurrent.common.buffers import MaskableRecurrentRolloutBufferSamples, MaskableRecurrentDictRolloutBuffer, MaskableRecurrentRolloutBuffer
-from maskable_recurrent.ppo_mask_recurrent.maskable_recurrent_policies import MaskableRecurrentActorCriticPolicy
+from sb3_contrib.ppo_recurrent.policies import (
+    CnnLstmPolicy,
+    MlpLstmPolicy,
+    MultiInputLstmPolicy,
+)
+from maskable_recurrent.common.buffers import (
+    MaskableRecurrentRolloutBufferSamples,
+    MaskableRecurrentDictRolloutBuffer,
+    MaskableRecurrentRolloutBuffer,
+)
+from maskable_recurrent.ppo_mask_recurrent.maskable_recurrent_policies import (
+    MaskableRecurrentActorCriticPolicy,
+)
 import sys
 import time
 import warnings
 from collections import deque
 from typing import Any, Dict, Optional, Tuple, Type, TypeVar, Union
 
-import gym
+import gymnasium as gym
 import numpy as np
 import torch as th
-from gym import spaces
+from gymnasium import spaces
 from stable_baselines3.common import utils
 from stable_baselines3.common.buffers import RolloutBuffer
-from stable_baselines3.common.callbacks import BaseCallback, CallbackList, ConvertCallback, ProgressBarCallback
+from stable_baselines3.common.callbacks import (
+    BaseCallback,
+    CallbackList,
+    ConvertCallback,
+    ProgressBarCallback,
+)
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
-from stable_baselines3.common.utils import explained_variance, get_schedule_fn, obs_as_tensor, safe_mean
+from stable_baselines3.common.utils import (
+    explained_variance,
+    get_schedule_fn,
+    obs_as_tensor,
+    safe_mean,
+)
 from stable_baselines3.common.vec_env import VecEnv
 from sb3_contrib.common.maskable.utils import get_action_masks, is_masking_supported
 
-MaskableRecurrentPPOSelf = TypeVar("MaskableRecurrentPPOSelf", bound="MaskableRecurrentPPO")
+MaskableRecurrentPPOSelf = TypeVar(
+    "MaskableRecurrentPPOSelf", bound="MaskableRecurrentPPO"
+)
 import warnings
 
 
@@ -120,16 +142,15 @@ class MaskableRecurrentPPO(OnPolicyAlgorithm):
             use_sde=use_sde,
             sde_sample_freq=sde_sample_freq,
             tensorboard_log=tensorboard_log,
-            create_eval_env=create_eval_env,
             policy_kwargs=policy_kwargs,
             verbose=verbose,
             seed=seed,
             device=device,
             _init_setup_model=False,
             supported_action_spaces=(
-                spaces.Discrete,
-                spaces.MultiDiscrete,
-                spaces.MultiBinary,
+                gym.spaces.Discrete,
+                gym.spaces.MultiDiscrete,
+                gym.spaces.MultiBinary,
             ),
         )
 
@@ -148,7 +169,9 @@ class MaskableRecurrentPPO(OnPolicyAlgorithm):
         self.set_random_seed(self.seed)
 
         buffer_cls = (
-            MaskableRecurrentDictRolloutBuffer if isinstance(self.observation_space, gym.spaces.Dict) else MaskableRecurrentRolloutBuffer
+            MaskableRecurrentDictRolloutBuffer
+            if isinstance(self.observation_space, gym.spaces.Dict)
+            else MaskableRecurrentRolloutBuffer
         )
 
         self.policy = self.policy_class(
@@ -180,7 +203,12 @@ class MaskableRecurrentPPO(OnPolicyAlgorithm):
             ),
         )
 
-        hidden_state_buffer_shape = (self.n_steps, lstm.num_layers, self.n_envs, lstm.hidden_size)
+        hidden_state_buffer_shape = (
+            self.n_steps,
+            lstm.num_layers,
+            self.n_envs,
+            lstm.hidden_size,
+        )
 
         self.rollout_buffer = buffer_cls(
             self.n_steps,
@@ -197,7 +225,9 @@ class MaskableRecurrentPPO(OnPolicyAlgorithm):
         self.clip_range = get_schedule_fn(self.clip_range)
         if self.clip_range_vf is not None:
             if isinstance(self.clip_range_vf, (float, int)):
-                assert self.clip_range_vf > 0, "`clip_range_vf` must be positive, pass `None` to deactivate vf clipping"
+                assert self.clip_range_vf > 0, (
+                    "`clip_range_vf` must be positive, pass `None` to deactivate vf clipping"
+                )
 
             self.clip_range_vf = get_schedule_fn(self.clip_range_vf)
 
@@ -223,7 +253,8 @@ class MaskableRecurrentPPO(OnPolicyAlgorithm):
             collected, False if callback terminated rollout prematurely.
         """
         assert isinstance(
-            rollout_buffer, (MaskableRecurrentRolloutBuffer, MaskableRecurrentDictRolloutBuffer)
+            rollout_buffer,
+            (MaskableRecurrentRolloutBuffer, MaskableRecurrentDictRolloutBuffer),
         ), f"{rollout_buffer} doesn't support recurrent policy"
 
         assert self._last_obs is not None, "No previous observation was provided"
@@ -235,7 +266,9 @@ class MaskableRecurrentPPO(OnPolicyAlgorithm):
         rollout_buffer.reset()
         # Sample new weights for the state dependent exploration
         if use_masking and not is_masking_supported(env):
-            raise ValueError("Environment does not support action masking. Consider using ActionMasker wrapper")
+            raise ValueError(
+                "Environment does not support action masking. Consider using ActionMasker wrapper"
+            )
         if self.use_sde:
             self.policy.reset_noise(env.num_envs)
 
@@ -244,20 +277,28 @@ class MaskableRecurrentPPO(OnPolicyAlgorithm):
         lstm_states = deepcopy(self._last_lstm_states)
 
         while n_steps < n_rollout_steps:
-            if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
+            if (
+                self.use_sde
+                and self.sde_sample_freq > 0
+                and n_steps % self.sde_sample_freq == 0
+            ):
                 # Sample a new noise matrix
                 self.policy.reset_noise(env.num_envs)
 
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                episode_starts = th.tensor(self._last_episode_starts).float().to(self.device)
+                episode_starts = (
+                    th.tensor(self._last_episode_starts).float().to(self.device)
+                )
 
                 # This is the only change related to invalid action masking
                 if use_masking:
                     action_masks = get_action_masks(env)
 
-                actions, values, log_probs, lstm_states = self.policy.forward(obs_tensor, lstm_states, episode_starts, action_masks = action_masks) # add action_masks
+                actions, values, log_probs, lstm_states = self.policy.forward(
+                    obs_tensor, lstm_states, episode_starts, action_masks=action_masks
+                )  # add action_masks
 
             actions = actions.cpu().numpy()
 
@@ -265,7 +306,9 @@ class MaskableRecurrentPPO(OnPolicyAlgorithm):
             clipped_actions = actions
             # Clip the actions to avoid out of bound error
             if isinstance(self.action_space, gym.spaces.Box):
-                clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
+                clipped_actions = np.clip(
+                    actions, self.action_space.low, self.action_space.high
+                )
 
             new_obs, rewards, dones, infos = env.step(clipped_actions)
 
@@ -291,7 +334,9 @@ class MaskableRecurrentPPO(OnPolicyAlgorithm):
                     and infos[idx].get("terminal_observation") is not None
                     and infos[idx].get("TimeLimit.truncated", False)
                 ):
-                    terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
+                    terminal_obs = self.policy.obs_to_tensor(
+                        infos[idx]["terminal_observation"]
+                    )[0]
                     with th.no_grad():
                         terminal_lstm_state = (
                             lstm_states.vf[0][:, idx : idx + 1, :],
@@ -299,7 +344,9 @@ class MaskableRecurrentPPO(OnPolicyAlgorithm):
                         )
                         # terminal_lstm_state = None
                         episode_starts = th.tensor([False]).float().to(self.device)
-                        terminal_value = self.policy.predict_values(terminal_obs, terminal_lstm_state, episode_starts)[0]
+                        terminal_value = self.policy.predict_values(
+                            terminal_obs, terminal_lstm_state, episode_starts
+                        )[0]
                     rewards[idx] += self.gamma * terminal_value
             rollout_buffer.add(
                 self._last_obs,
@@ -318,7 +365,9 @@ class MaskableRecurrentPPO(OnPolicyAlgorithm):
         with th.no_grad():
             # Compute value for the last timestep
             episode_starts = th.tensor(dones).float().to(self.device)
-            values = self.policy.predict_values(obs_as_tensor(new_obs, self.device), lstm_states.vf, episode_starts)
+            values = self.policy.predict_values(
+                obs_as_tensor(new_obs, self.device), lstm_states.vf, episode_starts
+            )
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
@@ -375,19 +424,25 @@ class MaskableRecurrentPPO(OnPolicyAlgorithm):
                 # Normalize advantage
                 advantages = rollout_data.advantages
                 if self.normalize_advantage:
-                    advantages = (advantages - advantages[mask].mean()) / (advantages[mask].std() + 1e-8)
+                    advantages = (advantages - advantages[mask].mean()) / (
+                        advantages[mask].std() + 1e-8
+                    )
 
                 # ratio between old and new policy, should be one at the first iteration
                 ratio = th.exp(log_prob - rollout_data.old_log_prob)
 
                 # clipped surrogate loss
                 policy_loss_1 = advantages * ratio
-                policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
+                policy_loss_2 = advantages * th.clamp(
+                    ratio, 1 - clip_range, 1 + clip_range
+                )
                 policy_loss = -th.mean(th.min(policy_loss_1, policy_loss_2)[mask])
 
                 # Logging
                 pg_losses.append(policy_loss.item())
-                clip_fraction = th.mean((th.abs(ratio - 1) > clip_range).float()[mask]).item()
+                clip_fraction = th.mean(
+                    (th.abs(ratio - 1) > clip_range).float()[mask]
+                ).item()
                 clip_fractions.append(clip_fraction)
 
                 if self.clip_range_vf is None:
@@ -414,7 +469,11 @@ class MaskableRecurrentPPO(OnPolicyAlgorithm):
 
                 entropy_losses.append(entropy_loss.item())
 
-                loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
+                loss = (
+                    policy_loss
+                    + self.ent_coef * entropy_loss
+                    + self.vf_coef * value_loss
+                )
 
                 # Calculate approximate form of reverse KL Divergence for early stopping
                 # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
@@ -422,27 +481,37 @@ class MaskableRecurrentPPO(OnPolicyAlgorithm):
                 # and Schulman blog: http://joschu.net/blog/kl-approx.html
                 with th.no_grad():
                     log_ratio = log_prob - rollout_data.old_log_prob
-                    approx_kl_div = th.mean(((th.exp(log_ratio) - 1) - log_ratio)[mask]).cpu().numpy()
+                    approx_kl_div = (
+                        th.mean(((th.exp(log_ratio) - 1) - log_ratio)[mask])
+                        .cpu()
+                        .numpy()
+                    )
                     approx_kl_divs.append(approx_kl_div)
 
                 if self.target_kl is not None and approx_kl_div > 1.5 * self.target_kl:
                     continue_training = False
                     if self.verbose >= 1:
-                        print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
+                        print(
+                            f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}"
+                        )
                     break
 
                 # Optimization step
                 self.policy.optimizer.zero_grad()
                 loss.backward()
                 # Clip grad norm
-                th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                th.nn.utils.clip_grad_norm_(
+                    self.policy.parameters(), self.max_grad_norm
+                )
                 self.policy.optimizer.step()
 
             if not continue_training:
                 break
 
         self._n_updates += self.n_epochs
-        explained_var = explained_variance(self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten())
+        explained_var = explained_variance(
+            self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten()
+        )
 
         # Logs
         self.logger.record("train/entropy_loss", np.mean(entropy_losses))
@@ -492,7 +561,13 @@ class MaskableRecurrentPPO(OnPolicyAlgorithm):
         callback.on_training_start(locals(), globals())
 
         while self.num_timesteps < total_timesteps:
-            continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps, use_masking=use_masking)
+            continue_training = self.collect_rollouts(
+                self.env,
+                callback,
+                self.rollout_buffer,
+                n_rollout_steps=self.n_steps,
+                use_masking=use_masking,
+            )
 
             if continue_training is False:
                 break
@@ -502,15 +577,29 @@ class MaskableRecurrentPPO(OnPolicyAlgorithm):
 
             # Display training infos
             if log_interval is not None and iteration % log_interval == 0:
-                time_elapsed = max((time.time_ns() - self.start_time) / 1e9, sys.float_info.epsilon)
-                fps = int((self.num_timesteps - self._num_timesteps_at_start) / time_elapsed)
+                time_elapsed = max(
+                    (time.time_ns() - self.start_time) / 1e9, sys.float_info.epsilon
+                )
+                fps = int(
+                    (self.num_timesteps - self._num_timesteps_at_start) / time_elapsed
+                )
                 self.logger.record("time/iterations", iteration, exclude="tensorboard")
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
-                    self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                    self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
+                    self.logger.record(
+                        "rollout/ep_rew_mean",
+                        safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]),
+                    )
+                    self.logger.record(
+                        "rollout/ep_len_mean",
+                        safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]),
+                    )
                 self.logger.record("time/fps", fps)
-                self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
-                self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
+                self.logger.record(
+                    "time/time_elapsed", int(time_elapsed), exclude="tensorboard"
+                )
+                self.logger.record(
+                    "time/total_timesteps", self.num_timesteps, exclude="tensorboard"
+                )
                 self.logger.dump(step=self.num_timesteps)
 
             self.train()
@@ -540,7 +629,9 @@ class MaskableRecurrentPPO(OnPolicyAlgorithm):
         :return: the model's action and the next hidden state
             (used in recurrent policies)
         """
-        return self.policy.predict(observation, state, episode_start, deterministic, action_masks=action_masks)
+        return self.policy.predict(
+            observation, state, episode_start, deterministic, action_masks=action_masks
+        )
 
     def _setup_learn(
         self,
@@ -611,14 +702,24 @@ class MaskableRecurrentPPO(OnPolicyAlgorithm):
         if eval_env is not None and self.seed is not None:
             eval_env.seed(self.seed)
 
-        eval_env = self._get_eval_env(eval_env)
+        # eval_env = self._get_eval_env(eval_env)
 
         # Configure logger's outputs if no logger was passed
         if not self._custom_logger:
-            self._logger = utils.configure_logger(self.verbose, self.tensorboard_log, tb_log_name, reset_num_timesteps)
+            self._logger = utils.configure_logger(
+                self.verbose, self.tensorboard_log, tb_log_name, reset_num_timesteps
+            )
 
         # Create eval callback if needed
-        callback = self._init_callback(callback, eval_env, eval_freq, n_eval_episodes, log_path, use_masking, progress_bar)
+        callback = self._init_callback(
+            callback,
+            eval_env,
+            eval_freq,
+            n_eval_episodes,
+            log_path,
+            use_masking,
+            progress_bar,
+        )
 
         return total_timesteps, callback
 
@@ -676,4 +777,3 @@ class MaskableRecurrentPPO(OnPolicyAlgorithm):
 
         callback.init_callback(self)
         return callback
-
